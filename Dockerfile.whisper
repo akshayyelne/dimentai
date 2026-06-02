@@ -1,0 +1,16 @@
+# Debian-based image for easy FFmpeg installation
+FROM python:3.10-slim
+
+# Install FFmpeg (The "ears" needed to process audio files)
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Whisper and ML dependencies
+RUN pip install --no-cache-dir openai-whisper torch
+
+# Pre-load the 'small' model into the image (approx 2GB VRAM required)
+RUN python -c "import whisper; whisper.load_model('small')"
+
+COPY transcribe.py .
+ENTRYPOINT ["python", "transcribe.py"]
