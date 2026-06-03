@@ -2,6 +2,8 @@
 
 Includes RED-TEAM cases: planted hallucinations MUST be caught, otherwise the
 audit gives false assurance. An audit that only ever passes is worthless.
+
+Metrics aligned to main.py (clock/oculomotor/gait scores, 0-10, higher = healthier).
 """
 import copy
 
@@ -12,7 +14,7 @@ G = engine.load_grounding()
 
 
 def _clean_report(measurements=None):
-    measurements = measurements or {"semantic_density": 0.62, "dual_task_cost": 33}
+    measurements = measurements or {"clock_score": 3, "oculomotor_score": 3, "gait_score": 3}
     return engine.build_report("pt_audit", measurements, G)
 
 
@@ -39,9 +41,9 @@ def test_fabricated_narrative_is_caught():
 
 def test_tampered_risk_tier_is_caught():
     rep = _clean_report()
-    # claim ECHO is low risk when the value (0.62) is a high-priority flag
-    rep["engine_findings"]["ECHO"]["tier"] = "low_risk"
-    rep["engine_findings"]["ECHO"]["flag"] = False
+    # claim VISTA is low risk when clock_score (3) is a high-priority flag
+    rep["engine_findings"]["VISTA"]["tier"] = "low_risk"
+    rep["engine_findings"]["VISTA"]["flag"] = False
     res = audit.audit_report(rep, G)
     assert not res.passed
     assert any(f["check"] == "threshold_integrity" for f in res.fails)
@@ -50,15 +52,15 @@ def test_tampered_risk_tier_is_caught():
 def test_tampered_composite_is_caught():
     rep = _clean_report()
     rep["composite_triage"]["triage_level"] = "stable"
-    rep["composite_triage"]["score"] = 0.0
+    rep["composite_triage"]["score"] = 10.0
     assert any(f["check"] == "composite_integrity"
                for f in audit.audit_report(rep, G).fails)
 
 
 def test_unescalated_high_flag_is_caught():
-    # STRIDE flags high (dtc 31) with a sub-50 score -> report MUST be review_required.
+    # gait 4 (STRIDE high) with clock/oculo 9 -> base stable but MUST be review_required.
     # Tampering it back to 'stable' (defeating the escalation rule) must be caught.
-    rep = _clean_report({"semantic_density": 0.90, "dual_task_cost": 31})
+    rep = _clean_report({"clock_score": 9, "oculomotor_score": 9, "gait_score": 4})
     assert rep["composite_triage"]["triage_level"] == "review_required"  # sanity: escalation happened
     rep["composite_triage"]["triage_level"] = "stable"
     rep["composite_triage"]["escalated"] = False

@@ -153,9 +153,9 @@ def audit_free_text(text: str, grounding: dict | None = None) -> AuditResult:
 
 def _sample_reports(grounding):
     cases = {
-        "stable": {"semantic_density": 0.95, "dual_task_cost": 10},
-        "high_flag": {"semantic_density": 0.62, "dual_task_cost": 33},
-        "review": {"semantic_density": 1.0, "dual_task_cost": 30},
+        "stable": {"clock_score": 9, "oculomotor_score": 9, "gait_score": 9},
+        "high_flag": {"clock_score": 3, "oculomotor_score": 3, "gait_score": 3},
+        "review": {"clock_score": 6, "oculomotor_score": 6, "gait_score": 6},
     }
     return {name: engine.build_report(f"audit_{name}", m, grounding)
             for name, m in cases.items()}

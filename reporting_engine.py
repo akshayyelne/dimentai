@@ -27,11 +27,14 @@ _CANDIDATE_PATHS = [
 ]
 
 # Which engine reads which measurement, and the human domain label.
+# Metrics aligned to main.py biomarker scores (0-10, higher = healthier).
+# ECHO has no live scorer in main.py yet -> echo_score is absent at runtime,
+# so ECHO classifies as 'undefined' until a speech scorer is added.
 ENGINE_METRICS = {
-    "ECHO": ("semantic_density", "Language"),
-    "STRIDE": ("dual_task_cost", "Perceptual-motor"),
-    "VISTA": ("cdt_error_count", "Visuospatial / Executive"),
-    "FOCUS": ("processing_speed_ms", "Complex attention"),
+    "ECHO": ("echo_score", "Language"),
+    "STRIDE": ("gait_score", "Perceptual-motor"),
+    "VISTA": ("clock_score", "Visuospatial / Executive"),
+    "FOCUS": ("oculomotor_score", "Complex attention"),
 }
 
 _TIER_LABEL = {
@@ -130,10 +133,12 @@ def _composite(measurements: dict, grounding: dict, engine_findings: dict | None
     """
     comp_rec = grounding["by_id"].get("mock-threshold-composite-012", {})
     thresholds = comp_rec.get("thresholds", {})
-    dtc = float(measurements.get("dual_task_cost", 0) or 0)
-    sem = float(measurements.get("semantic_density", 0) or 0)
-    score = round(dtc * 0.4 + sem * 40, 2)
-    base_level = "stable" if score < 50 else "review_required"
+    # Aligned to main.py /synthesize: weighted 0-10 scale, higher = healthier.
+    clock = float(measurements.get("clock_score", 0) or 0)
+    oculo = float(measurements.get("oculomotor_score", 0) or 0)
+    gait = float(measurements.get("gait_score", 0) or 0)
+    score = round(clock * 0.5 + oculo * 0.3 + gait * 0.2, 2)
+    base_level = "stable" if score >= 7.0 else "review_required"
 
     flagged = [e for e, f in (engine_findings or {}).items() if f.get("flag")]
     triage_level = "review_required" if flagged else base_level
@@ -147,7 +152,7 @@ def _composite(measurements: dict, grounding: dict, engine_findings: dict | None
         "escalated_by": flagged,
         "escalation_rule": thresholds.get("escalation",
                                           "any engine high_priority_flag => review_required"),
-        "formula": thresholds.get("formula", "dual_task_cost*0.4 + semantic_density*40"),
+        "formula": thresholds.get("formula", "clock_score*0.5 + oculomotor_score*0.3 + gait_score*0.2"),
         "provenance": comp_rec.get("provenance", "SYNTHETIC"),
         "threshold_source_id": comp_rec.get("id"),
     }
