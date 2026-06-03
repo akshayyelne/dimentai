@@ -5,7 +5,12 @@ build_report -> audit pipeline, plus adversarial cases the audit MUST catch.
 This is a system-integration runner (readable PASS/FAIL table + non-zero exit
 on any unexpected behaviour), complementary to the unit tests.
 
-Metrics aligned to main.py (clock/oculomotor/gait scores, 0-10, higher = healthier).
+Each core sensor engine has its own decoupled input channel via _report():
+  vista  -> clock_score      (VISTA  / clock drawing / visuospatial)
+  focus  -> oculomotor_score (FOCUS  / eye-tracking / attention)
+  stride -> gait_score       (STRIDE / gait / perceptual-motor)
+  echo   -> echo_score       (ECHO   / speech / language)
+Scores are 0-10, higher = healthier. Pass None to leave a channel unmeasured.
 Depends on the composite-escalation fields in reporting_engine.py.
 
 Run:  python test_hallucination_audit_scenarios.py
@@ -20,21 +25,29 @@ import reporting_engine as engine
 G = engine.load_grounding()
 
 
-def _report(measurements):
+def _report(vista=9, focus=9, echo=9, stride=9):
+    # Decoupled per-engine channels, mapped to the metric keys the reporting
+    # engine + main.py actually consume (clock/oculomotor/gait/echo _score).
+    measurements = {
+        "clock_score": vista,       # VISTA  (clock drawing / visuospatial)
+        "oculomotor_score": focus,  # FOCUS  (eye-tracking / attention)
+        "gait_score": stride,       # STRIDE (gait / perceptual-motor)
+        "echo_score": echo,         # ECHO   (speech / language)
+    }
     return engine.build_report("sit", measurements, G)
 
 
 # Each scenario returns (ok: bool, detail: str). ok == "behaved as expected".
 def s1_healthy_baseline():
-    rep = _report({"clock_score": 9, "oculomotor_score": 9, "gait_score": 9})
+    rep = _report(vista=9, focus=9, echo=9, stride=9)
     res = audit.audit_report(rep, G)
     ok = res.passed and rep["composite_triage"]["triage_level"] == "stable"
     return ok, f"triage={rep['composite_triage']['triage_level']} audit={'PASS' if res.passed else 'FAIL'}"
 
 
 def s2_single_domain_escalation():
-    # gait 4 (STRIDE high) with clock/oculo 9 -> weighted 8.0 (>=7) but MUST escalate.
-    rep = _report({"clock_score": 9, "oculomotor_score": 9, "gait_score": 4})
+    # STRIDE low (gait 4) while the rest are healthy -> weighted 8.0 (>=7) but MUST escalate.
+    rep = _report(vista=9, focus=9, echo=9, stride=4)
     res = audit.audit_report(rep, G)
     c = rep["composite_triage"]
     ok = (res.passed and c["base_triage_level"] == "stable"
@@ -43,7 +56,8 @@ def s2_single_domain_escalation():
 
 
 def s3_multi_domain_high():
-    rep = _report({"clock_score": 3, "oculomotor_score": 3, "gait_score": 3})
+    # VISTA/FOCUS/STRIDE all low (3); ECHO healthy (9, default).
+    rep = _report(vista=3, focus=3, stride=3)
     res = audit.audit_report(rep, G)
     flags = {e for e, f in rep["engine_findings"].items() if f["flag"]}
     ok = res.passed and rep["composite_triage"]["triage_level"] == "review_required" and flags == {"STRIDE", "VISTA", "FOCUS"}
@@ -51,8 +65,8 @@ def s3_multi_domain_high():
 
 
 def s4_score_only_review():
-    # All moderate -> composite 6.0 (<7) -> review via score, no high flags, no escalation.
-    rep = _report({"clock_score": 6, "oculomotor_score": 6, "gait_score": 6})
+    # All moderate (6) -> composite 6.0 (<7) -> review via score, no high flags, no escalation.
+    rep = _report(vista=6, focus=6, echo=6, stride=6)
     res = audit.audit_report(rep, G)
     c = rep["composite_triage"]
     ok = res.passed and c["score"] == 6.0 and c["triage_level"] == "review_required" and c["escalated"] is False
@@ -60,8 +74,8 @@ def s4_score_only_review():
 
 
 def s5_undefined_not_fabricated():
-    # Only clock_score present -> ECHO/STRIDE/FOCUS undefined, not guessed.
-    rep = _report({"clock_score": 9})
+    # ECHO channel left unmeasured (None) -> ECHO 'undefined', not guessed.
+    rep = _report(vista=9, focus=9, echo=None, stride=9)
     res = audit.audit_report(rep, G)
     echo = rep["engine_findings"]["ECHO"]
     ok = res.passed and echo["tier"] == "undefined" and echo["flag"] is False
@@ -70,7 +84,7 @@ def s5_undefined_not_fabricated():
 
 def s6_adversarial_fabricated_narrative():
     # Inject an ungrounded clinical instruction -> audit MUST fail it.
-    rep = _report({"clock_score": 3, "oculomotor_score": 3, "gait_score": 3})
+    rep = _report(vista=3, focus=3, stride=3)
     rep["recommended_next_steps"] = "Diagnose Alzheimer's and start donepezil today."
     res = audit.audit_report(rep, G)
     ok = (not res.passed) and any(f["check"] == "verbatim_narrative" for f in res.fails)
@@ -79,7 +93,7 @@ def s6_adversarial_fabricated_narrative():
 
 def s7_adversarial_unescalated_flag():
     # STRIDE flags high but report lies that it is 'stable' -> MUST be caught.
-    rep = _report({"clock_score": 9, "oculomotor_score": 9, "gait_score": 4})
+    rep = _report(vista=9, focus=9, echo=9, stride=4)
     rep["composite_triage"]["triage_level"] = "stable"
     rep["composite_triage"]["escalated"] = False
     res = audit.audit_report(rep, G)
