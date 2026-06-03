@@ -5,17 +5,20 @@
 > `SYNTHETIC` = invented for testing · `SOURCED_REFERENCE` = from RACGP Silver Book Part A.
 
 ## 1. Engine → Domain map (`SYNTHETIC` design hypothesis)
-| Engine | Domain (DSM-5) | Mock markers |
-|---|---|---|
-| **ECHO** | Language | semantic_density, anomia_rate, syntactic_complexity |
-| **STRIDE** | Perceptual-motor | gait_speed_variability, step_asymmetry, dual_task_cost |
-| **VISTA** | Visuospatial / Executive | cdt_error_count, dyspraxia_index |
-| **FOCUS** | Complex attention | fixation_stability, scanning_efficiency, processing_speed_ms |
+Metrics aligned to `main.py` biomarker scores (0–10, **higher = healthier**).
 
-## 2. Mock risk tiers (`SYNTHETIC` — aligned to `main.py`, no clinical meaning)
-- **ECHO** `semantic_density`: Low **≥0.90** · Moderate **0.70–0.89** · High-flag **<0.70**
-- **STRIDE** `dual_task_cost` (arbitrary test unit, *not* a real DTC %): Low **≤20** · Moderate **21–30** · High-flag **>30**
-- **Composite** (mirrors `main.py`): `dual_task_cost*0.4 + semantic_density*40` → **stable <50**, else **review_required**
+| Engine | Domain (DSM-5) | Live metric (`main.py`) | Endpoint |
+|---|---|---|---|
+| **ECHO** | Language | `echo_score` *(not yet produced — `undefined` at runtime)* | — |
+| **STRIDE** | Perceptual-motor | `gait_score` | `/process-gait` |
+| **VISTA** | Visuospatial / Executive | `clock_score` | `/process-clock` |
+| **FOCUS** | Complex attention | `oculomotor_score` | `/process-oculomotor` |
+
+## 2. Mock risk tiers (`SYNTHETIC` — 0–10 scale, no clinical meaning)
+- Per engine (`echo_score`/`gait_score`/`clock_score`/`oculomotor_score`):
+  Low/baseline **≥ 8** · Moderate **5–7.99** · High-priority flag **< 5**
+- **Composite** (mirrors `main.py /synthesize`): `clock_score*0.5 + oculomotor_score*0.3 + gait_score*0.2` → **stable ≥ 7**, else **review_required**
+- **Composite-escalation:** any engine high-priority flag (**< 5**) forces **review_required** regardless of the weighted score.
 
 ## 3. Exclusion & differential (`SOURCED_REFERENCE` — Silver Book Part A)
 - Exclude first: **delirium**, **depression (pseudodementia)**, **medication effects** (psychotropics, anticholinergics, incontinence meds, antihistamines), physical/structural disease.

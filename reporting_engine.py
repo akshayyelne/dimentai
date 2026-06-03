@@ -27,11 +27,14 @@ _CANDIDATE_PATHS = [
 ]
 
 # Which engine reads which measurement, and the human domain label.
+# Metrics aligned to main.py biomarker scores (0-10, higher = healthier).
+# ECHO has no live scorer in main.py yet -> echo_score is absent at runtime,
+# so ECHO classifies as 'undefined' until a speech scorer is added.
 ENGINE_METRICS = {
-    "ECHO": ("semantic_density", "Language"),
-    "STRIDE": ("dual_task_cost", "Perceptual-motor"),
-    "VISTA": ("cdt_error_count", "Visuospatial / Executive"),
-    "FOCUS": ("processing_speed_ms", "Complex attention"),
+    "ECHO": ("echo_score", "Language"),
+    "STRIDE": ("gait_score", "Perceptual-motor"),
+    "VISTA": ("clock_score", "Visuospatial / Executive"),
+    "FOCUS": ("oculomotor_score", "Complex attention"),
 }
 
 _TIER_LABEL = {
@@ -120,16 +123,36 @@ def classify(engine: str, value: float | None, grounding: dict) -> dict:
     }
 
 
-def _composite(measurements: dict, grounding: dict) -> dict:
-    """Composite triage level, mirroring the fixture's composite rule (=> main.py)."""
+def _composite(measurements: dict, grounding: dict, engine_findings: dict | None = None) -> dict:
+    """Composite triage level, mirroring the fixture's composite rule (=> main.py).
+
+    Composite-escalation safety rule: if ANY individual engine raises a
+    high-priority flag, the composite is forced to 'review_required' regardless
+    of the weighted score — a single high-risk domain must never be averaged
+    away into a 'stable' overall result.
+    """
     comp_rec = grounding["by_id"].get("mock-threshold-composite-012", {})
-    dtc = float(measurements.get("dual_task_cost", 0) or 0)
-    sem = float(measurements.get("semantic_density", 0) or 0)
-    score = round(dtc * 0.4 + sem * 40, 2)
+    thresholds = comp_rec.get("thresholds", {})
+    # Aligned to main.py /synthesize: weighted 0-10 scale, higher = healthier.
+    clock = float(measurements.get("clock_score", 0) or 0)
+    oculo = float(measurements.get("oculomotor_score", 0) or 0)
+    gait = float(measurements.get("gait_score", 0) or 0)
+    score = round(clock * 0.5 + oculo * 0.3 + gait * 0.2, 2)
+    base_level = "stable" if score >= 7.0 else "review_required"
+
+    flagged = [e for e, f in (engine_findings or {}).items() if f.get("flag")]
+    triage_level = "review_required" if flagged else base_level
+    escalated = bool(flagged) and base_level != "review_required"
+
     return {
         "score": score,
-        "triage_level": "stable" if score < 50 else "review_required",
-        "formula": comp_rec.get("thresholds", {}).get("formula", "dual_task_cost*0.4 + semantic_density*40"),
+        "base_triage_level": base_level,
+        "triage_level": triage_level,
+        "escalated": escalated,
+        "escalated_by": flagged,
+        "escalation_rule": thresholds.get("escalation",
+                                          "any engine high_priority_flag => review_required"),
+        "formula": thresholds.get("formula", "clock_score*0.5 + oculomotor_score*0.3 + gait_score*0.2"),
         "provenance": comp_rec.get("provenance", "SYNTHETIC"),
         "threshold_source_id": comp_rec.get("id"),
     }
@@ -142,7 +165,7 @@ def build_report(patient_id: str, measurements: dict, grounding: dict | None = N
 
     engines = {e: classify(e, measurements.get(ENGINE_METRICS[e][0]), grounding)
                for e in ENGINE_METRICS}
-    composite = _composite(measurements, grounding)
+    composite = _composite(measurements, grounding, engines)
 
     cdss = by_id.get("real-cdss-024", {})
     exclusion = by_id.get("real-exclusion-020", {})
@@ -208,6 +231,9 @@ def render_markdown(report: dict) -> str:
     L.append(f"- **Score:** {c['score']}  (`{c['formula']}`)")
     L.append(f"- **Triage level:** **{c['triage_level']}**  "
              f"_(provenance: {c['provenance']})_")
+    if c.get("escalated"):
+        L.append(f"- **⚠️ Escalated** to `review_required` by high-priority flag(s): "
+                 f"**{', '.join(c['escalated_by'])}** (weighted score alone was `{c['base_triage_level']}`).")
     L.append("")
     L.append("## Clinician must exclude first")
     L.append(f"{report['differential_exclusions_required']}")

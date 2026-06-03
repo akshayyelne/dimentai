@@ -116,11 +116,12 @@ def audit_report(report: dict, grounding: dict | None = None) -> AuditResult:
     measurements = {f["metric"]: f["value"]
                     for f in report.get("engine_findings", {}).values()
                     if f.get("value") is not None}
-    rc = engine._composite(measurements, grounding)
+    rc = engine._composite(measurements, grounding, report.get("engine_findings", {}))
     comp = report.get("composite_triage", {})
     if comp.get("score") != rc["score"] or comp.get("triage_level") != rc["triage_level"]:
         findings.append(Finding("FAIL", "composite_integrity",
-                                "composite score/level not reproducible from reported values"))
+                                "composite score/level not reproducible from reported values "
+                                "(includes composite-escalation rule)"))
 
     # 5. Synthetic data must be labelled as such.
     used_synthetic = any(
@@ -152,9 +153,9 @@ def audit_free_text(text: str, grounding: dict | None = None) -> AuditResult:
 
 def _sample_reports(grounding):
     cases = {
-        "stable": {"semantic_density": 0.95, "dual_task_cost": 10},
-        "high_flag": {"semantic_density": 0.62, "dual_task_cost": 33},
-        "review": {"semantic_density": 1.0, "dual_task_cost": 30},
+        "stable": {"clock_score": 9, "oculomotor_score": 9, "gait_score": 9},
+        "high_flag": {"clock_score": 3, "oculomotor_score": 3, "gait_score": 3},
+        "review": {"clock_score": 6, "oculomotor_score": 6, "gait_score": 6},
     }
     return {name: engine.build_report(f"audit_{name}", m, grounding)
             for name, m in cases.items()}
