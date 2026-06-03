@@ -116,11 +116,12 @@ def audit_report(report: dict, grounding: dict | None = None) -> AuditResult:
     measurements = {f["metric"]: f["value"]
                     for f in report.get("engine_findings", {}).values()
                     if f.get("value") is not None}
-    rc = engine._composite(measurements, grounding)
+    rc = engine._composite(measurements, grounding, report.get("engine_findings", {}))
     comp = report.get("composite_triage", {})
     if comp.get("score") != rc["score"] or comp.get("triage_level") != rc["triage_level"]:
         findings.append(Finding("FAIL", "composite_integrity",
-                                "composite score/level not reproducible from reported values"))
+                                "composite score/level not reproducible from reported values "
+                                "(includes composite-escalation rule)"))
 
     # 5. Synthetic data must be labelled as such.
     used_synthetic = any(

@@ -16,17 +16,35 @@ def test_low_risk_patient_is_stable():
     # semantic_density 0.95 -> low; dual_task_cost 10 -> low; composite 0.4*10+40*0.95=42 -> stable
     rep = re.build_report("pt_low", {"semantic_density": 0.95, "dual_task_cost": 10}, G)
     assert rep["composite_triage"]["triage_level"] == "stable"
+    assert rep["composite_triage"]["escalated"] is False
     assert rep["engine_findings"]["ECHO"]["tier"] == "low_risk"
     assert rep["engine_findings"]["STRIDE"]["tier"] == "low_risk"
     assert rep["engine_findings"]["ECHO"]["flag"] is False
 
 
 def test_high_risk_patient_flags_and_reviews():
-    # semantic_density 0.60 -> high flag; dual_task_cost 35 -> high; composite 0.4*35+40*0.6=38 ...
+    # semantic_density 0.60 -> high flag; dual_task_cost 35 -> high; composite 0.4*35+40*0.6=38 (<50)
+    # base would be 'stable', but the high flags must escalate it to 'review_required'.
     rep = re.build_report("pt_high", {"semantic_density": 0.60, "dual_task_cost": 35}, G)
     assert rep["engine_findings"]["ECHO"]["tier"] == "high_priority_flag"
     assert rep["engine_findings"]["ECHO"]["flag"] is True
     assert rep["engine_findings"]["STRIDE"]["tier"] == "high_priority_flag"
+    assert rep["composite_triage"]["score"] < 50
+    assert rep["composite_triage"]["base_triage_level"] == "stable"
+    assert rep["composite_triage"]["triage_level"] == "review_required"
+    assert rep["composite_triage"]["escalated"] is True
+
+
+def test_composite_escalates_on_single_engine_flag():
+    # ECHO low (0.90), STRIDE high (dtc 31). Weighted score 31*0.4+0.90*40=48.4 (<50, base stable),
+    # but the single STRIDE high-flag must still force review_required.
+    rep = re.build_report("pt_esc", {"semantic_density": 0.90, "dual_task_cost": 31}, G)
+    assert rep["engine_findings"]["ECHO"]["flag"] is False
+    assert rep["engine_findings"]["STRIDE"]["flag"] is True
+    assert rep["composite_triage"]["base_triage_level"] == "stable"
+    assert rep["composite_triage"]["triage_level"] == "review_required"
+    assert rep["composite_triage"]["escalated"] is True
+    assert rep["composite_triage"]["escalated_by"] == ["STRIDE"]
 
 
 def test_review_required_threshold():
