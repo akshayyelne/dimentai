@@ -5,8 +5,8 @@ build_report -> audit pipeline, plus adversarial cases the audit MUST catch.
 This is a system-integration runner (readable PASS/FAIL table + non-zero exit
 on any unexpected behaviour), complementary to the unit tests.
 
-Note: depends on the composite-escalation fields (base_triage_level,
-escalated, escalated_by) introduced in reporting_engine.py.
+Metrics aligned to main.py (clock/oculomotor/gait scores, 0-10, higher = healthier).
+Depends on the composite-escalation fields in reporting_engine.py.
 
 Run:  python test_hallucination_audit_scenarios.py
 """
@@ -26,15 +26,15 @@ def _report(measurements):
 
 # Each scenario returns (ok: bool, detail: str). ok == "behaved as expected".
 def s1_healthy_baseline():
-    rep = _report({"semantic_density": 0.96, "dual_task_cost": 8})
+    rep = _report({"clock_score": 9, "oculomotor_score": 9, "gait_score": 9})
     res = audit.audit_report(rep, G)
     ok = res.passed and rep["composite_triage"]["triage_level"] == "stable"
     return ok, f"triage={rep['composite_triage']['triage_level']} audit={'PASS' if res.passed else 'FAIL'}"
 
 
 def s2_single_domain_escalation():
-    # STRIDE high (dtc 31), ECHO low (0.90) -> weighted 48.4 (<50) but MUST escalate.
-    rep = _report({"semantic_density": 0.90, "dual_task_cost": 31})
+    # gait 4 (STRIDE high) with clock/oculo 9 -> weighted 8.0 (>=7) but MUST escalate.
+    rep = _report({"clock_score": 9, "oculomotor_score": 9, "gait_score": 4})
     res = audit.audit_report(rep, G)
     c = rep["composite_triage"]
     ok = (res.passed and c["base_triage_level"] == "stable"
@@ -43,33 +43,34 @@ def s2_single_domain_escalation():
 
 
 def s3_multi_domain_high():
-    rep = _report({"semantic_density": 0.62, "dual_task_cost": 33})
+    rep = _report({"clock_score": 3, "oculomotor_score": 3, "gait_score": 3})
     res = audit.audit_report(rep, G)
-    flags = [e for e, f in rep["engine_findings"].items() if f["flag"]]
-    ok = res.passed and rep["composite_triage"]["triage_level"] == "review_required" and set(flags) == {"ECHO", "STRIDE"}
-    return ok, f"flags={flags} triage={rep['composite_triage']['triage_level']} audit={'PASS' if res.passed else 'FAIL'}"
+    flags = {e for e, f in rep["engine_findings"].items() if f["flag"]}
+    ok = res.passed and rep["composite_triage"]["triage_level"] == "review_required" and flags == {"STRIDE", "VISTA", "FOCUS"}
+    return ok, f"flags={sorted(flags)} triage={rep['composite_triage']['triage_level']} audit={'PASS' if res.passed else 'FAIL'}"
 
 
 def s4_score_only_review():
-    # No high flags, but weighted score >=50 -> review via score, not escalation.
-    rep = _report({"semantic_density": 1.0, "dual_task_cost": 30})
+    # All moderate -> composite 6.0 (<7) -> review via score, no high flags, no escalation.
+    rep = _report({"clock_score": 6, "oculomotor_score": 6, "gait_score": 6})
     res = audit.audit_report(rep, G)
     c = rep["composite_triage"]
-    ok = res.passed and c["score"] == 52.0 and c["triage_level"] == "review_required" and c["escalated"] is False
+    ok = res.passed and c["score"] == 6.0 and c["triage_level"] == "review_required" and c["escalated"] is False
     return ok, f"score={c['score']} triage={c['triage_level']} escalated={c['escalated']} audit={'PASS' if res.passed else 'FAIL'}"
 
 
 def s5_undefined_not_fabricated():
-    rep = _report({"cdt_error_count": 5, "processing_speed_ms": 900})
+    # Only clock_score present -> ECHO/STRIDE/FOCUS undefined, not guessed.
+    rep = _report({"clock_score": 9})
     res = audit.audit_report(rep, G)
-    vista = rep["engine_findings"]["VISTA"]
-    ok = res.passed and vista["tier"] == "undefined" and vista["flag"] is False
-    return ok, f"VISTA tier={vista['tier']} flag={vista['flag']} audit={'PASS' if res.passed else 'FAIL'}"
+    echo = rep["engine_findings"]["ECHO"]
+    ok = res.passed and echo["tier"] == "undefined" and echo["flag"] is False
+    return ok, f"ECHO tier={echo['tier']} flag={echo['flag']} audit={'PASS' if res.passed else 'FAIL'}"
 
 
 def s6_adversarial_fabricated_narrative():
     # Inject an ungrounded clinical instruction -> audit MUST fail it.
-    rep = _report({"semantic_density": 0.62, "dual_task_cost": 33})
+    rep = _report({"clock_score": 3, "oculomotor_score": 3, "gait_score": 3})
     rep["recommended_next_steps"] = "Diagnose Alzheimer's and start donepezil today."
     res = audit.audit_report(rep, G)
     ok = (not res.passed) and any(f["check"] == "verbatim_narrative" for f in res.fails)
@@ -78,7 +79,7 @@ def s6_adversarial_fabricated_narrative():
 
 def s7_adversarial_unescalated_flag():
     # STRIDE flags high but report lies that it is 'stable' -> MUST be caught.
-    rep = _report({"semantic_density": 0.90, "dual_task_cost": 31})
+    rep = _report({"clock_score": 9, "oculomotor_score": 9, "gait_score": 4})
     rep["composite_triage"]["triage_level"] = "stable"
     rep["composite_triage"]["escalated"] = False
     res = audit.audit_report(rep, G)
