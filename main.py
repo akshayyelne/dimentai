@@ -1,6 +1,7 @@
 import os
 import logging
 import math
+import secrets
 from typing import List, Dict, Optional
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -43,8 +44,26 @@ except Exception as e:
     logger.error(f"Firestore Initialization Failed: {e}")
     db = None
 
-# Security: The Biometric/Edge Token for Task 1.3
-SECRET_TOKEN = "DimentAI_Secure_2026" 
+# Security: the edge/biometric token is sourced from the environment, never hard-coded.
+# Set DIMENTAI_TOKEN in Cloud Run / Secret Manager. Endpoints fail closed if it is unset.
+SECRET_TOKEN = os.environ.get("DIMENTAI_TOKEN")
+if not SECRET_TOKEN:
+    logger.warning(
+        "DIMENTAI_TOKEN is not set; authenticated clinical endpoints will reject "
+        "all requests until it is configured."
+    )
+
+
+def _verify_token(provided: Optional[str]) -> None:
+    """Constant-time verification of the edge token. Fails closed when unconfigured."""
+    if not SECRET_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Server authentication is not configured",
+        )
+    if not provided or not secrets.compare_digest(provided, SECRET_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid Biometric Token")
+
 
 class StrokePoint(BaseModel):
     x: float
@@ -103,8 +122,7 @@ async def process_clock(payload: ClockDrawInput, x_dimentai_token: str = Header(
         )
 
     # Security Handshake
-    if x_dimentai_token != SECRET_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid Biometric Token")
+    _verify_token(x_dimentai_token)
 
     try:
         strokes = payload.strokes
@@ -190,7 +208,7 @@ async def process_clock(payload: ClockDrawInput, x_dimentai_token: str = Header(
         raise
     except Exception as e:
         logger.error(f"Clock Analysis Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Clock Processing Error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Clock processing failed")
 
 @app.post("/process-oculomotor", tags=["Clinical Intelligence"])
 async def process_oculomotor(data: OculomotorInput, x_dimentai_token: str = Header(None)):
@@ -205,8 +223,7 @@ async def process_oculomotor(data: OculomotorInput, x_dimentai_token: str = Head
             detail="Database service is currently unavailable"
         )
 
-    if x_dimentai_token != SECRET_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid Biometric Token")
+    _verify_token(x_dimentai_token)
 
     try:
         if not data.telemetry:
@@ -265,7 +282,7 @@ async def process_oculomotor(data: OculomotorInput, x_dimentai_token: str = Head
         raise
     except Exception as e:
         logger.error(f"Oculomotor Analysis Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Oculomotor Processing Error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Oculomotor processing failed")
 
 @app.post("/process-gait", tags=["Clinical Intelligence"])
 async def process_gait(payload: GaitPayload, x_dimentai_token: str = Header(None)):
@@ -277,8 +294,7 @@ async def process_gait(payload: GaitPayload, x_dimentai_token: str = Header(None
         )
 
     # Simple Security Token Check
-    if x_dimentai_token != SECRET_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized token identity")
+    _verify_token(x_dimentai_token)
         
     if not payload.gait_telemetry:
         raise HTTPException(status_code=400, detail="Empty telemetry payload")
@@ -332,8 +348,7 @@ async def synthesize_biomarkers(user_id: str = "test_user_001", x_dimentai_token
         )
 
     # Security Handshake (Missing in previous version)
-    if x_dimentai_token != SECRET_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid Biometric Token")
+    _verify_token(x_dimentai_token)
 
     # Log the search path (View this in Google Cloud Run Logs)
     logger.info(f"SIT DEBUG: Project: {db.project} | Looking for ID: {user_id}")
@@ -383,7 +398,8 @@ async def synthesize_biomarkers(user_id: str = "test_user_001", x_dimentai_token
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Synthesis Error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Synthesis failed")
 
 if __name__ == "__main__":
     # Cloud Run expects the app to listen on the PORT environment variable
