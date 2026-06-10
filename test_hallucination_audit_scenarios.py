@@ -115,6 +115,60 @@ def s9_free_text_grounded_ok():
     return res.passed, f"audit={'PASS' if res.passed else 'FAIL'} findings={len(res.findings)}"
 
 
+def s10_adversarial_missing_pathology_guidelines():
+    # TGA CDSS: 'next steps' must be the verbatim sourced pathway. Replace it with
+    # generic text (which also drops the mandatory screening vocabulary) -> the
+    # verbatim_narrative check must fail.
+    rep = _report(vista=3, focus=3, stride=3)
+    rep["recommended_next_steps"] = "Refer the patient for some general tests and follow up later."
+    res = audit.audit_report(rep, G)
+    ok = (not res.passed) and any(f["check"] == "verbatim_narrative" for f in res.fails)
+    return ok, f"caught={not res.passed} checks={sorted({f['check'] for f in res.fails})}"
+
+
+def s11_adversarial_delirium_omission():
+    # Acute-delirium exclusion text must be present verbatim. (Exclusions are a
+    # sourced STRING at rep['differential_exclusions_required'], not a list at
+    # rep['narrative']['required_exclusions'].) Drop the delirium clause -> fail.
+    rep = _report(vista=3, focus=3, stride=3)
+    rep["differential_exclusions_required"] = (
+        "Before attributing cognitive variance to progressive dementia, a clinician "
+        "must exclude depression and medication side effects."  # 'delirium' removed
+    )
+    res = audit.audit_report(rep, G)
+    ok = (not res.passed) and any(f["check"] == "verbatim_narrative" for f in res.fails)
+    return ok, f"caught={not res.passed} checks={sorted({f['check'] for f in res.fails})}"
+
+
+def s12_env_spoof():
+    # Prevent synthetic data being passed off as production. (The provenance marker
+    # is rep['data_status']; the audit's 'data_status' check is the env-integrity
+    # gate -- there is no rep['metadata']['data_environment'] in the schema.)
+    rep = _report(vista=9, focus=9, stride=9)
+    rep["data_status"] = "PRODUCTION"
+    res = audit.audit_report(rep, G)
+    ok = (not res.passed) and any(f["check"] == "data_status" for f in res.fails)
+    return ok, f"caught={not res.passed} checks={sorted({f['check'] for f in res.fails})}"
+
+
+def s13_moderate_dip_boundary():
+    # Mild localized dip (stride 6 = moderate) must NOT hyper-escalate -> stays stable.
+    rep = _report(vista=10, focus=10, echo=10, stride=6)
+    res = audit.audit_report(rep, G)
+    c = rep["composite_triage"]
+    ok = res.passed and c["triage_level"] == "stable" and c["escalated"] is False
+    return ok, f"score={c['score']} triage={c['triage_level']} escalated={c['escalated']} audit={'PASS' if res.passed else 'FAIL'}"
+
+
+def s14_floor_boundary():
+    # Absolute floor: all zeros -> no div-by-zero; review_required at score 0.0.
+    rep = _report(vista=0, focus=0, echo=0, stride=0)
+    res = audit.audit_report(rep, G)
+    c = rep["composite_triage"]
+    ok = res.passed and c["score"] == 0.0 and c["triage_level"] == "review_required"
+    return ok, f"score={c['score']} triage={c['triage_level']} audit={'PASS' if res.passed else 'FAIL'}"
+
+
 SCENARIOS = [
     ("S1  Healthy baseline -> stable",            "report passes",  s1_healthy_baseline),
     ("S2  Single high flag -> escalates",         "report passes",  s2_single_domain_escalation),
@@ -125,6 +179,11 @@ SCENARIOS = [
     ("S7  ADVERSARIAL unescalated flag",          "audit catches",  s7_adversarial_unescalated_flag),
     ("S8  ADVERSARIAL diagnostic free-text",      "audit catches",  s8_free_text_diagnostic_language),
     ("S9  Grounded free-text -> clean",           "audit passes",   s9_free_text_grounded_ok),
+    ("S10 ADVERSARIAL missing pathology steps",   "audit catches",  s10_adversarial_missing_pathology_guidelines),
+    ("S11 ADVERSARIAL delirium omission",         "audit catches",  s11_adversarial_delirium_omission),
+    ("S12 ADVERSARIAL env spoof (PRODUCTION)",    "audit catches",  s12_env_spoof),
+    ("S13 BOUNDARY moderate dip -> stable",       "report passes",  s13_moderate_dip_boundary),
+    ("S14 BOUNDARY floor (all zeros) -> review",  "report passes",  s14_floor_boundary),
 ]
 
 
