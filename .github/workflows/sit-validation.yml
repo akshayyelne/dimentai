@@ -1,0 +1,35 @@
+name: SIT Cloud Pipeline Validation
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: # Allows you to manually click "Run" from GitHub
+
+jobs:
+  validate-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-cloud-firestore google-cloud-aiplatform requests pytest
+
+      - name: Execute Task 5.5 Validation Runner
+        env:
+          # Change this to your live Cloud Run URL deployed in us-central1
+          CLOUD_RUN_URL: "https://dimentai-engine-340111136050.us-central1.run.app" 
+        run: |
+          python test_hallucination_audit_scenarios.py

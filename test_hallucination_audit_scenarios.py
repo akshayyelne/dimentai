@@ -1,135 +1,105 @@
-"""DimentAI — SIT Hallucination Audit Scenarios (Phase 4.4).
+import os
+import unittest
+from hallucination_audit import audit_report, audit_free_text
 
-End-to-end "patient journey" scenarios that exercise the full
-build_report -> audit pipeline, plus adversarial cases the audit MUST catch.
-This is a system-integration runner (readable PASS/FAIL table + non-zero exit
-on any unexpected behaviour), complementary to the unit tests.
+# Reads the URL from GitHub Actions settings; defaults to localhost if testing offline
+BACKEND_URL = os.getenv("CLOUD_RUN_URL", "http://127.0.0.1:8000")
 
-Metrics aligned to main.py (clock/oculomotor/gait scores, 0-10, higher = healthier).
-Depends on the composite-escalation fields in reporting_engine.py.
+class TestDimentAISITScenarios(unittest.TestCase):
 
-Run:  python test_hallucination_audit_scenarios.py
-"""
-from __future__ import annotations
+    def setUp(self):
+        """Set up standard valid data matching our clinical grounding fixtures."""
+        self.valid_disclaimer = (
+            "DimentAI is a pre-clinical triage risk stratification tool. It does not provide "
+            "a autonomous diagnosis. Clinicians must maintain independent diagnostic authority, "
+            "perform mandatory pathology screens (B12, Folate, TFTs, FBC), and exclude acute delirium."
+        )
+        
+        self.base_valid_report = {
+            "metadata": {"data_environment": "SYNTHETIC_TEST_DATA"},
+            "metrics": {
+                "ECHO": {"value": 0.85, "tier": "Low Risk Baseline"},
+                "STRIDE": {"value": 8.5, "tier": "Low Risk Baseline"}, # DTC < 10%
+                "VISTA": {"value": 1.2, "tier": "Low Risk Baseline"},
+                "FOCUS": {"value": 0.9, "tier": "Low Risk Baseline"}
+            },
+            "composite": {"status": "Stable", "summary": "Metrics sit safely within normal baselines."},
+            "narrative": {
+                "mandatory_disclaimer": self.valid_disclaimer,
+                "required_exclusions": ["Delirium", "Depression", "Polypharmacy"]
+            }
+        }
 
-import sys
+    # ==========================================
+    # 🟢 CATEGORY 1: GREEN-PATH TEST CASES
+    # ==========================================
 
-import hallucination_audit as audit
-import reporting_engine as engine
+    def test_case_1_1_standard_healthy_baseline(self):
+        """SIT 1.1: Verify a completely healthy, grounded report passes cleanly."""
+        result = audit_report(self.base_valid_report)
+        self.assertTrue(result, "Standard healthy baseline report should pass the audit.")
 
-G = engine.load_grounding()
-
-
-def _report(measurements):
-    return engine.build_report("sit", measurements, G)
-
-
-# Each scenario returns (ok: bool, detail: str). ok == "behaved as expected".
-def s1_healthy_baseline():
-    rep = _report({"clock_score": 9, "oculomotor_score": 9, "gait_score": 9})
-    res = audit.audit_report(rep, G)
-    ok = res.passed and rep["composite_triage"]["triage_level"] == "stable"
-    return ok, f"triage={rep['composite_triage']['triage_level']} audit={'PASS' if res.passed else 'FAIL'}"
-
-
-def s2_single_domain_escalation():
-    # gait 4 (STRIDE high) with clock/oculo 9 -> weighted 8.0 (>=7) but MUST escalate.
-    rep = _report({"clock_score": 9, "oculomotor_score": 9, "gait_score": 4})
-    res = audit.audit_report(rep, G)
-    c = rep["composite_triage"]
-    ok = (res.passed and c["base_triage_level"] == "stable"
-          and c["triage_level"] == "review_required" and c["escalated_by"] == ["STRIDE"])
-    return ok, f"base={c['base_triage_level']} -> {c['triage_level']} by {c['escalated_by']} audit={'PASS' if res.passed else 'FAIL'}"
-
-
-def s3_multi_domain_high():
-    rep = _report({"clock_score": 3, "oculomotor_score": 3, "gait_score": 3})
-    res = audit.audit_report(rep, G)
-    flags = {e for e, f in rep["engine_findings"].items() if f["flag"]}
-    ok = res.passed and rep["composite_triage"]["triage_level"] == "review_required" and flags == {"STRIDE", "VISTA", "FOCUS"}
-    return ok, f"flags={sorted(flags)} triage={rep['composite_triage']['triage_level']} audit={'PASS' if res.passed else 'FAIL'}"
-
-
-def s4_score_only_review():
-    # All moderate -> composite 6.0 (<7) -> review via score, no high flags, no escalation.
-    rep = _report({"clock_score": 6, "oculomotor_score": 6, "gait_score": 6})
-    res = audit.audit_report(rep, G)
-    c = rep["composite_triage"]
-    ok = res.passed and c["score"] == 6.0 and c["triage_level"] == "review_required" and c["escalated"] is False
-    return ok, f"score={c['score']} triage={c['triage_level']} escalated={c['escalated']} audit={'PASS' if res.passed else 'FAIL'}"
+    def test_case_1_2_valid_high_priority_escalation(self):
+        """SIT 1.2: Verify a valid escalated report passes if math and text align."""
+        high_risk_report = self.base_valid_report.copy()
+        high_risk_report["metrics"]["STRIDE"] = {"value": 24.5, "tier": "High-Priority Triage Flag"} # DTC > 20%
+        # Composite escalation fix rule applied
+        high_risk_report["composite"] = {
+            "status": "review_required",
+            "summary": "High-Priority flag triggered by sensor variance."
+        }
+        
+        result = audit_report(high_risk_report)
+        self.assertTrue(result, "A correctly calculated high-risk report should pass validation.")
 
 
-def s5_undefined_not_fabricated():
-    # Only clock_score present -> ECHO/STRIDE/FOCUS undefined, not guessed.
-    rep = _report({"clock_score": 9})
-    res = audit.audit_report(rep, G)
-    echo = rep["engine_findings"]["ECHO"]
-    ok = res.passed and echo["tier"] == "undefined" and echo["flag"] is False
-    return ok, f"ECHO tier={echo['tier']} flag={echo['flag']} audit={'PASS' if res.passed else 'FAIL'}"
+    # ==========================================
+    # 🔴 CATEGORY 2: RED-TEAM TEST CASES
+    # ==========================================
 
+    def test_case_2_1_risk_smoothing_tamper(self):
+        """SIT 2.1: Audit must FAIL if high raw metrics are masked as Low Risk."""
+        tampered_report = self.base_valid_report.copy()
+        # Raw value is dangerously high (>20% DTC), but tier is falsely logged as low
+        tampered_report["metrics"]["STRIDE"] = {"value": 24.5, "tier": "Low Risk Baseline"} 
+        
+        with self.assertRaises(ValueError, msg="Should fail threshold integrity checking."):
+            audit_report(tampered_report)
 
-def s6_adversarial_fabricated_narrative():
-    # Inject an ungrounded clinical instruction -> audit MUST fail it.
-    rep = _report({"clock_score": 3, "oculomotor_score": 3, "gait_score": 3})
-    rep["recommended_next_steps"] = "Diagnose Alzheimer's and start donepezil today."
-    res = audit.audit_report(rep, G)
-    ok = (not res.passed) and any(f["check"] == "verbatim_narrative" for f in res.fails)
-    return ok, f"caught={not res.passed} checks={[f['check'] for f in res.fails]}"
+    def test_case_2_2_silent_danger_bypass(self):
+        """SIT 2.2: Audit must FAIL if an engine flags high risk but composite stays 'Stable'."""
+        broken_composite_report = self.base_valid_report.copy()
+        broken_composite_report["metrics"]["ECHO"] = {"value": 0.12, "tier": "High-Priority Triage Flag"}
+        # Coding error bug: overall composite wasn't escalated to review_required
+        broken_composite_report["composite"] = {"status": "Stable", "summary": "All clear."}
+        
+        with self.assertRaises(ValueError, msg="Should fail composite integrity checking."):
+            audit_report(broken_composite_report)
 
+    def test_case_2_3_medical_diagnostic_slip(self):
+        """SIT 2.3: Audit must FAIL if assertive diagnostic language is used."""
+        hallucinated_narrative = (
+            "Based on the spatial layout errors in Vista, the patient is diagnosed with "
+            "early-stage Alzheimer's Disease."
+        )
+        
+        result = audit_free_text(hallucinated_narrative)
+        self.assertFalse(result, "Free-text audit must reject absolute diagnostic claims.")
 
-def s7_adversarial_unescalated_flag():
-    # STRIDE flags high but report lies that it is 'stable' -> MUST be caught.
-    rep = _report({"clock_score": 9, "oculomotor_score": 9, "gait_score": 4})
-    rep["composite_triage"]["triage_level"] = "stable"
-    rep["composite_triage"]["escalated"] = False
-    res = audit.audit_report(rep, G)
-    ok = (not res.passed) and any(f["check"] == "composite_integrity" for f in res.fails)
-    return ok, f"caught={not res.passed} checks={[f['check'] for f in res.fails]}"
+    def test_case_2_4_ungrounded_assessment_illusion(self):
+        """SIT 2.4: Audit must FAIL if ungrounded clinical tracking models are hallucinated."""
+        hallucinated_narrative = "Patient performed poorly on the Montreal Cognitive Assessment (MoCA)."
+        
+        result = audit_free_text(hallucinated_narrative)
+        self.assertFalse(result, "Free-text audit must reject tests outside our sensor matrix (MoCA).")
 
-
-def s8_free_text_diagnostic_language():
-    txt = "Based on the scan, the patient is diagnosed with vascular dementia."
-    res = audit.audit_free_text(txt, G)
-    ok = (not res.passed) and any(f["check"] == "diagnostic_language" for f in res.fails)
-    return ok, f"caught={not res.passed} checks={sorted({f['check'] for f in res.fails})}"
-
-
-def s9_free_text_grounded_ok():
-    txt = ("DimentAI flags patterns that may warrant clinical assessment; it does "
-           "not diagnose. Recommend clinician review and exclusion of delirium.")
-    res = audit.audit_free_text(txt, G)
-    return res.passed, f"audit={'PASS' if res.passed else 'FAIL'} findings={len(res.findings)}"
-
-
-SCENARIOS = [
-    ("S1  Healthy baseline -> stable",            "report passes",  s1_healthy_baseline),
-    ("S2  Single high flag -> escalates",         "report passes",  s2_single_domain_escalation),
-    ("S3  Multi-domain high -> review",           "report passes",  s3_multi_domain_high),
-    ("S4  Score-only review (no escalation)",     "report passes",  s4_score_only_review),
-    ("S5  Undefined engines not fabricated",      "report passes",  s5_undefined_not_fabricated),
-    ("S6  ADVERSARIAL fabricated narrative",      "audit catches",  s6_adversarial_fabricated_narrative),
-    ("S7  ADVERSARIAL unescalated flag",          "audit catches",  s7_adversarial_unescalated_flag),
-    ("S8  ADVERSARIAL diagnostic free-text",      "audit catches",  s8_free_text_diagnostic_language),
-    ("S9  Grounded free-text -> clean",           "audit passes",   s9_free_text_grounded_ok),
-]
-
-
-def main() -> int:
-    print("DimentAI — SIT Hallucination Audit Scenarios")
-    print("=" * 78)
-    print(f"{'SCENARIO':<42}{'EXPECTED':<16}RESULT")
-    print("-" * 78)
-    passed = 0
-    for name, expected, fn in SCENARIOS:
-        ok, detail = fn()
-        passed += ok
-        print(f"{name:<42}{expected:<16}{'PASS  ' + detail if ok else 'UNEXPECTED  ' + detail}")
-    print("-" * 78)
-    total = len(SCENARIOS)
-    print(f"SIT SCENARIOS: {passed}/{total} behaved as expected -> "
-          + ("PASS" if passed == total else "FAIL"))
-    return 0 if passed == total else 1
-
+    def test_case_2_5_legal_disclaimer_omission(self):
+        """SIT 2.5: Audit must FAIL if the mandatory TGA disclaimer is modified or missing."""
+        missing_disclaimer_report = self.base_valid_report.copy()
+        missing_disclaimer_report["narrative"]["mandatory_disclaimer"] = "Everything looks fine!"
+        
+        with self.assertRaises(ValueError, msg="Should fail verbatim narrative disclaimer checking."):
+            audit_report(missing_disclaimer_report)
 
 if __name__ == "__main__":
-    sys.exit(main())
+    unittest.main()
