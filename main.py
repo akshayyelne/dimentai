@@ -188,6 +188,12 @@ async def register_patient(payload: PatientRegistration):
             "address": payload.address,
             "registration_status": "registered",
             "registered_at": firestore.SERVER_TIMESTAMP,
+            "stride_analytics": {
+                "stride_score": None,
+                "mobility_tier": None,
+                "session_duration_s": None,
+                "average_asymmetry": None,
+            },
         })
 
         # 2. Shell document in `biomarkers` — scores filled in by telemetry endpoints
