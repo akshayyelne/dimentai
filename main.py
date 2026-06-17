@@ -138,13 +138,29 @@ class SynthesisInput(BaseModel):
     patient_id: str
 
 class PatientRegistration(BaseModel):
-    user_id: str
+    auth_uid: str       # Firebase Auth UID — stored for linking but not used as doc key
     first_name: str
     last_name: str
     email: str
     dob: str
     phone: str
     address: str
+
+
+def _generate_patient_uid() -> str:
+    """Atomically increment the global patient counter and return patient_uid_NNNNNN."""
+    counter_ref = db.collection("counters").document("patient_uid")
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _increment(txn, ref):
+        snap = ref.get(transaction=txn)
+        n = (snap.get("next_value") if snap.exists else 0) + 1
+        txn.set(ref, {"next_value": n})
+        return n
+
+    n = _increment(transaction, counter_ref)
+    return f"patient_uid_{n:06d}"
 
 
 # =====================================================================
@@ -174,12 +190,13 @@ async def register_patient(payload: PatientRegistration):
             detail="Database service is currently unavailable"
         )
 
-    uid = payload.user_id
-
     try:
-        # 1. Primary patient profile in `patients`
+        uid = _generate_patient_uid()
+
+        # 1. Demographics in `patients` — pure identity record, no clinical data
         db.collection("patients").document(uid).set({
             "user_id": uid,
+            "auth_uid": payload.auth_uid,
             "first_name": payload.first_name,
             "last_name": payload.last_name,
             "email": payload.email,
@@ -188,20 +205,20 @@ async def register_patient(payload: PatientRegistration):
             "address": payload.address,
             "registration_status": "registered",
             "registered_at": firestore.SERVER_TIMESTAMP,
+        })
+
+        # 2. All 4 clinical channel shells in `biomarkers`
+        db.collection("biomarkers").document(uid).set({
+            "user_id": uid,
+            "focus_score": None,
+            "vista_score": None,
+            "echo_score": None,
             "stride_analytics": {
                 "stride_score": None,
                 "mobility_tier": None,
                 "session_duration_s": None,
                 "average_asymmetry": None,
             },
-        })
-
-        # 2. Shell document in `biomarkers` — scores filled in by telemetry endpoints
-        db.collection("biomarkers").document(uid).set({
-            "user_id": uid,
-            "focus_score": None,
-            "vista_score": None,
-            "echo_score": None,
             "initialized_at": firestore.SERVER_TIMESTAMP,
         })
 
@@ -212,7 +229,7 @@ async def register_patient(payload: PatientRegistration):
             "initialized_at": firestore.SERVER_TIMESTAMP,
         })
 
-        logger.info(f"✅ Patient registered and shell documents created for UID: {uid}")
+        logger.info(f"✅ Patient registered: {uid} (auth_uid={payload.auth_uid})")
         return {
             "status": "success",
             "user_id": uid,
@@ -389,7 +406,7 @@ async def process_gait(payload: GaitPayload, x_dimentai_token: str = Header(None
         gait_score = round(max(0.0, min(10.0, (1.0 - avg_asymmetry) * 10.0)), 2)
         mobility_tier = "Stable" if gait_score >= 7.0 else "Guarded"
 
-        doc_ref = db.collection("patients").document(payload.user_id)
+        doc_ref = db.collection("biomarkers").document(payload.user_id)
         doc_ref.set({
             "stride_analytics": {
                 "stride_score": gait_score,
@@ -429,27 +446,26 @@ async def synthesize_biomarkers(payload: SynthesisInput, x_dimentai_token: str =
     logger.info(f"🔍 [Synthesis Loop] Generating formal audit report for Patient ID: {patient_id}")
     
     try:
-        # Retrieve primary diagnostic collection profiles
+        # All 4 clinical channels now live in a single `biomarkers` document
         bio_ref = db.collection("biomarkers").document(patient_id).get()
-        pat_ref = db.collection("patients").document(patient_id).get()
-        
-        # Automated pipeline fallback logic for default calibration test users
-        if not bio_ref.exists and not pat_ref.exists:
+
+        if not bio_ref.exists:
             if patient_id in ["hq2w7Z_SIT_Test_User", "test_user_001"]:
-                bio_data = {"focus_score": 8.0, "vista_score": 8.2, "echo_score": 9.0}
-                pat_data = {"stride_analytics": {"stride_score": 8.0}}
+                bio_data = {
+                    "focus_score": 8.0, "vista_score": 8.2, "echo_score": 9.0,
+                    "stride_analytics": {"stride_score": 8.0},
+                }
                 logger.info("⚠️ Active document parameters empty. Injecting baseline verification fallback.")
             else:
-                raise HTTPException(status_code=404, detail=f"Patient record data targets for '{patient_id}' not found.")
+                raise HTTPException(status_code=404, detail=f"Patient biomarkers for '{patient_id}' not found.")
         else:
-            bio_data = bio_ref.to_dict() if bio_ref.exists else {}
-            pat_data = pat_ref.to_dict() if pat_ref.exists else {}
+            bio_data = bio_ref.to_dict()
 
         # Extract decoupled 4-agent channel values
-        vista_val = bio_data.get("vista_score", 0.0)
-        focus_val = bio_data.get("focus_score", 0.0)
-        echo_val = bio_data.get("echo_score", 9.0)   # acoustic baseline fallback
-        stride_val = pat_data.get("stride_analytics", {}).get("stride_score", 0.0)
+        vista_val  = bio_data.get("vista_score", 0.0)
+        focus_val  = bio_data.get("focus_score", 0.0)
+        echo_val   = bio_data.get("echo_score", 9.0)   # acoustic baseline fallback
+        stride_val = (bio_data.get("stride_analytics") or {}).get("stride_score") or 0.0
 
         # Balanced 4-channel diagnostic matrix: equal 25% weight per agent
         composite_score = round((vista_val + focus_val + echo_val + stride_val) / 4.0, 2)
