@@ -17,10 +17,17 @@ Run:  python test_hallucination_audit_scenarios.py
 """
 from __future__ import annotations
 
+import os
 import sys
+import unittest
+
+import requests
 
 import hallucination_audit as audit
 import reporting_engine as engine
+
+BACKEND_URL = os.getenv("CLOUD_RUN_URL", "http://127.0.0.1:8000")
+DIMENTAI_TOKEN = os.getenv("DIMENTAI_TOKEN", "")
 
 G = engine.load_grounding()
 
@@ -143,6 +150,22 @@ def main() -> int:
     print(f"SIT SCENARIOS: {passed}/{total} behaved as expected -> "
           + ("PASS" if passed == total else "FAIL"))
     return 0 if passed == total else 1
+
+
+class TestDimentAISITScenarios(unittest.TestCase):
+
+    def test_happy_path_stable_patient(self):
+        """UAT S10: SIT healthy patient synthesizes to stable triage."""
+        response = requests.post(
+            f"{BACKEND_URL}/synthesize",
+            json={"patient_id": "hq2w7Z_SIT_Test_User"},
+            headers={"x-dimentai-token": DIMENTAI_TOKEN},
+            timeout=15,
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["triage_level"], "stable")
+        self.assertGreaterEqual(body["composite_score"], 7.0)
 
 
 if __name__ == "__main__":
